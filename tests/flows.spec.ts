@@ -130,9 +130,11 @@ vi.mock('../src/dsh-cli.ts', () => {
     writeDep(name, `^${version}`)
     writePkg(name, { version, ...(pkg.versions[version].manifest as object) }, pkg.versions[version].artifacts)
     if (fake.buildScriptOutputOnce !== '') {
+      // Real pnpm exits 1 with ERR_PNPM_IGNORED_BUILDS after writing the
+      // manifest; the stdout carries the "Ignored build scripts" line.
       const stdout = fake.buildScriptOutputOnce
       fake.buildScriptOutputOnce = ''
-      return { ...ok, stdout }
+      return { ...ok, exitCode: 1, stdout }
     }
     return ok
   }
@@ -439,6 +441,22 @@ describe('update flow — no npm publishing required', () => {
     expect(String(r.json.error)).not.toMatch(/刚发布|just released/)
     // …but still an actionable next step (retry usually resolves it).
     expect(String(r.json.error)).toMatch(/立即更新|Update now/)
+  })
+
+  it('surfaces ignored builds from an update that pulls in new build-script deps, with a friendly message', async () => {
+    advanceNpmLatest('1.2.0')
+    // The newer version introduces transitive deps with build scripts; pnpm
+    // reports them via the ndjson ignored-scripts event and exits 1.
+    fake.buildScriptOutputOnce = 'Ignored build scripts: cloudflared@0.7.3, ssh2@1.17.0.'
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(r.status).toBe(502)
+    expect(r.json.ok).toBe(false)
+    // Version-qualified names are stripped to bare names (pnpm 11 ndjson),
+    // matching the install flow so approve-builds can accept them.
+    expect(r.json.ignoredBuilds).toEqual(['cloudflared', 'ssh2'])
+    // Friendly bilingual message instead of pnpm's raw stack.
+    expect(String(r.json.error)).toMatch(/放行后重试|Allow build scripts and retry/)
+    expect(String(r.json.error)).not.toMatch(/pnpm\.mjs/)
   })
 })
 

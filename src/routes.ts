@@ -363,6 +363,15 @@ export function mountMarketRoutes(host: MarketHost, config: MarketConfig): () =>
             const cancelDiff = cancelled ? changedSince(beforeInstalled) : null
             logEvent(ok || cancelled ? 'info' : 'error', 'update',
               `${name} -> ${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${stale ? ` STALE(${staleReason ?? 'unknown'})` : ''}${ok || cancelled ? '' : ` stderr=${result.stderr.slice(-300)}`}`)
+            // An update that pulls in NEW transitive deps with build scripts
+            // (cloudflared, ssh2, …) is blocked by pnpm >= 10 just like a fresh
+            // install — surface the approve-builds banner instead of pnpm's raw
+            // stack.
+            const updateIgnoredBuilds = (() => {
+              if (Array.isArray(result.ignoredBuilds) && result.ignoredBuilds.length > 0) return result.ignoredBuilds
+              const list = parseIgnoredBuilds(result.stdout, result.stderr)
+              return list.length > 0 ? list : undefined
+            })()
             // A user-cancelled run is a quiet outcome, not an error.
             sendJson(response, ok || cancelled ? 200 : 502, {
               ok,
@@ -372,7 +381,10 @@ export function mountMarketRoutes(host: MarketHost, config: MarketConfig): () =>
               changed: cancelDiff?.changed,
               activation,
               staleReason: staleReason ?? undefined,
-              error: staleError ?? undefined,
+              ignoredBuilds: updateIgnoredBuilds,
+              error: staleError ?? (Array.isArray(updateIgnoredBuilds) && updateIgnoredBuilds.length > 0
+                ? `更新引入的新依赖带构建脚本，被 pnpm 默认拦截（${updateIgnoredBuilds.join(', ')}），请点击上方按钮放行后重试 / the update pulled in new deps with build scripts that pnpm blocks by default (${updateIgnoredBuilds.join(', ')}); click "Allow build scripts and retry" above`
+                : undefined),
               exitCode: result.exitCode,
               timedOut: result.timedOut,
               stdout: result.stdout,
